@@ -1,0 +1,8 @@
+{
+  "profiles": {
+    "AssemblyAnalyzer": {
+        "commandName": "Project",
+        "commandLineArgs": "--assembly c:\\temp\\mylib.dll --include-full-project-decompilation --output-path c:\\temp --remove-dead-code --remove-dead-stores --ignore-compiler-generated --nested-directories --no-formatting"
+    }
+  }
+}
