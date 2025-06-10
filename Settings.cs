@@ -16,8 +16,6 @@ namespace AssemblyAnalyzer
         public bool NoFormatting { get; set; } = false;
         public bool IgnoreCompilerGeneratedMethods { get; set; } = false;
 
-        private static int MIN_ARGS = 4;
-
         private static void PrintHelp()
         {
             Console.WriteLine("AssemblyAnalyzer");
@@ -38,15 +36,17 @@ namespace AssemblyAnalyzer
             Console.WriteLine("     --no-formatting                        Strip all formatting characters from decompilation output");
         }
 
-        public static Settings? LoadSettings(string[] args)
+        public static bool LoadSettings(string[] args, out Settings? _Settings)
         {
-            if (args.Length < MIN_ARGS)
+            _Settings = null;
+
+            if (args.Length == 0)
             {
                 PrintHelp();
-                return null;
+                return false;
             }
 
-            var settings = new Settings();
+            _Settings = new Settings();
 
             for (int i = 0; i < args.Length; i++)
             {
@@ -54,70 +54,75 @@ namespace AssemblyAnalyzer
                 {
                     case "--assembly":
                         if (i + 1 < args.Length)
-                            settings.AssemblyPath = args[++i];
+                            _Settings.AssemblyPath = args[++i];
                         break;
                     case "--output-path":
                         if (i + 1 < args.Length)
-                            settings.OutputPath = args[++i];
+                            _Settings.OutputPath = args[++i];
                         break;
                     case "--remove-dead-code":
-                        settings.RemoveDeadCode = true;
+                        _Settings.RemoveDeadCode = true;
                         break;
                     case "--remove-dead-stores":
-                        settings.RemoveDeadStores = true;
+                        _Settings.RemoveDeadStores = true;
                         break;
                     case "--nested-directories":
-                        settings.GenerateNestedDirectories = true;
+                        _Settings.GenerateNestedDirectories = true;
                         break;
                     case "--include-full-project-decompilation":
-                        settings.IncludeFullProjectDecompilation = true;
+                        _Settings.IncludeFullProjectDecompilation = true;
                         break;
                     case "--attempt-symbol-load":
-                        settings.AttemptSymbolLoad = true;
+                        _Settings.AttemptSymbolLoad = true;
                         break;
                     case "--ignore-compiler-generated":
-                        settings.IgnoreCompilerGeneratedMethods = true;
+                        _Settings.IgnoreCompilerGeneratedMethods = true;
                         break;
                     case "--use-pdb-file":
                         if (i + 1 < args.Length)
                         {
-                            settings.AttemptSymbolLoad = true;
-                            settings.PdbFilePath = args[++i];
+                            _Settings.AttemptSymbolLoad = true;
+                            _Settings.PdbFilePath = args[++i];
                         }
                         break;
                     case "--no-formatting":
-                        settings.NoFormatting = true;
+                        _Settings.NoFormatting = true;
                         break;
+                    case "--help":
+                    case "-h":
+                        PrintHelp();
+                        _Settings = null;
+                        return true;
                     default:
                         PrintHelp();
-                        return null;
+                        return false;
                 }
             }
 
-            if (string.IsNullOrEmpty(settings.AssemblyPath))
+            if (string.IsNullOrEmpty(_Settings.AssemblyPath))
             {
                 Console.WriteLine("You must specify --assembly <path>.");
-                return null;
+                return false;
             }
 
-            if (!File.Exists(settings.AssemblyPath))
+            if (!File.Exists(_Settings.AssemblyPath))
             {
-                Console.WriteLine($"Assembly not found: {settings.AssemblyPath}");
-                return null;
+                Console.WriteLine($"Assembly not found: {_Settings.AssemblyPath}");
+                return false;
             }
 
-            if (string.IsNullOrEmpty(settings.OutputPath))
+            if (string.IsNullOrEmpty(_Settings.OutputPath))
             {
                 Console.WriteLine("You must specify --output-path <path>.");
-                return null;
+                return false;
             }
 
-            if (!string.IsNullOrEmpty(settings.PdbFilePath) && !File.Exists(settings.PdbFilePath))
+            if (!string.IsNullOrEmpty(_Settings.PdbFilePath) && !File.Exists(_Settings.PdbFilePath))
             {
-                Console.WriteLine($"Pdb file not found: {settings.PdbFilePath}");
-                return null;
+                Console.WriteLine($"Pdb file not found: {_Settings.PdbFilePath}");
+                return false;
             }
-            return settings;
+            return true;
         }
     }
 }

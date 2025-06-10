@@ -16,17 +16,20 @@ namespace AssemblyAnalyzer
 {
     public class Program
     {
-        private static async Task<int> Main(string[] args)
+        private static int Main(string[] args)
         {
-            var settings = Settings.LoadSettings(args);
-            if (settings == null)
+            if (!Settings.LoadSettings(args, out var settings))
             {
                 return 1;
             }
-            return await AnalyzeAssembly(settings);
+            if (settings == null)
+            {
+                return 0; // --help
+            }
+            return AnalyzeAssembly(settings);
         }
 
-        public static async Task<int> AnalyzeAssembly(Settings settings)
+        public static int AnalyzeAssembly(Settings settings)
         {
             string assemblyFileName = Path.GetFileNameWithoutExtension(settings.AssemblyPath);
             string projectPath = Path.Combine(settings.OutputPath, assemblyFileName);
@@ -108,7 +111,7 @@ namespace AssemblyAnalyzer
                         var returnType = signature.ReturnType;
                         var parameters = signature.ParameterTypes.Select((t, i) => new { Type = t, Name = $"param{i + 1}" }).ToList();
                         var methodSize = 0;
-                        string ilBytesStr = null;
+                        string ilBytesStr = string.Empty;
 
                         if (method.RelativeVirtualAddress != 0)
                         {
