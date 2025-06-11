@@ -32,7 +32,7 @@ namespace AssemblyAnalyzer
         public static int AnalyzeAssembly(Settings settings)
         {
             string assemblyFileName = Path.GetFileNameWithoutExtension(settings.AssemblyPath);
-            string projectPath = Path.Combine(settings.OutputPath, assemblyFileName);
+            string projectPath = settings.OutputPath;
             using var stream = File.OpenRead(settings.AssemblyPath);
             using var peReader = new PEReader(stream);
             var metadataReader = peReader.GetMetadataReader();
