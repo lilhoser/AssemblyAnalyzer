@@ -159,7 +159,7 @@ namespace AssemblyAnalyzer
                             MethodSize = methodSize,
                             Parameters = parameters,
                             ReturnType = returnType,
-                            RVA = $"0x{method.RelativeVirtualAddress:X}",
+                            RVA = method.RelativeVirtualAddress,
                             ILBytes = ilBytesStr,
                             DecompiledSource = sourceText,
                             StringLiterals = stringLiterals
