@@ -43,22 +43,16 @@ namespace AssemblyAnalyzer
                 return 1;
             }
 
-            var result = new
+            var result = new DataModel()
             {
-                PEInformation = new
+                PEInformation = new PEInformationModel
                 {
                     FileSize = stream.Length,
                     ImageBase = peReader.PEHeaders.PEHeader.ImageBase,
                     EntryPointRVA = peReader.PEHeaders.PEHeader.AddressOfEntryPoint,
                     SectionAlignment = peReader.PEHeaders.PEHeader.SectionAlignment,
                     FileAlignment = peReader.PEHeaders.PEHeader.FileAlignment
-                },
-                Types = new List<object>(),
-                ImportedFunctions = new List<object>(),
-                ImportedTypes = new List<string>(),
-                ExportedTypes = new List<string>(),
-                References = new List<string>(),
-                FullDecompilation = new List<string>()
+                }
             };
 
             try
@@ -89,13 +83,13 @@ namespace AssemblyAnalyzer
                     var namespaceName = metadataReader.GetString(typeDef.Namespace);
                     var fullTypeName = string.IsNullOrEmpty(namespaceName) ? typeName : $"{namespaceName}.{typeName}";
 
-                    var typeObj = new
+                    var typeObj = new TypeModel()
                     {
                         Name = fullTypeName,
                         Kind = typeDef.Attributes.HasFlag(TypeAttributes.Interface) ? "Interface"
                             : typeDef.Attributes.HasFlag(TypeAttributes.Class) ? "Class"
                             : (typeDef.Attributes.HasFlag(TypeAttributes.Sealed) && typeDef.Attributes.HasFlag(TypeAttributes.SpecialName) ? "Enum" : "Unknown"),
-                        Methods = new List<object>()
+                        Methods = new List<MethodModel>()
                     };
 
                     foreach (var methodHandle in typeDef.GetMethods())
@@ -109,7 +103,9 @@ namespace AssemblyAnalyzer
                         var context = new GenericContext(method.GetGenericParameters(), typeDef.GetGenericParameters(), metadataReader);
                         var signature = method.DecodeSignature<string, GenericContext>(new SignatureDecoder(), context);
                         var returnType = signature.ReturnType;
-                        var parameters = signature.ParameterTypes.Select((t, i) => new { Type = t, Name = $"param{i + 1}" }).ToList();
+                        var parameters = signature.ParameterTypes
+                            .Select((t, i) => new MethodParameterModel { Type = t, Name = $"param{i + 1}" })
+                            .ToList();
                         var methodSize = 0;
                         string ilBytesStr = string.Empty;
 
@@ -139,9 +135,11 @@ namespace AssemblyAnalyzer
 
                         string sourceText = string.Empty;
                         var stringLiterals = new List<string>();
+                        var calledMethods = new List<CalledMethodModel>(); // methods this decompiled method calls
                         try
                         {
                             var decompiledNode = csharpDecompiler.Decompile(methodHandle);
+                            decompiledNode.AcceptVisitor(new CallGraphVisitor(calledMethods));
                             sourceText = decompiledNode.ToString();
                             if (!string.IsNullOrEmpty(sourceText))
                             {
@@ -153,7 +151,7 @@ namespace AssemblyAnalyzer
                         {
                             sourceText = "    <decompilation failed>";
                         }
-                        ((List<object>)typeObj.Methods).Add(new
+                        typeObj.Methods.Add(new MethodModel()
                         {
                             Name = methodName,
                             MethodSize = methodSize,
@@ -162,11 +160,12 @@ namespace AssemblyAnalyzer
                             RVA = method.RelativeVirtualAddress,
                             ILBytes = ilBytesStr,
                             DecompiledSource = sourceText,
-                            StringLiterals = stringLiterals
+                            StringLiterals = stringLiterals,
+                            CalledMethods = calledMethods
                         });
                     }
 
-                    ((List<object>)result.Types).Add(typeObj);
+                    result.Types.Add(typeObj);
                 }
 
                 // Imported Methods
@@ -190,20 +189,27 @@ namespace AssemblyAnalyzer
                                 fullMethodName = $"{fullTypeName}{methodName}";
                             }
 
-                            ((List<object>)result.ImportedFunctions).Add(new
+                            if (!result.ImportedFunctions.Any(result => result.FullTypeName == fullMethodName))
                             {
-                                FullTypeName = fullMethodName,
-                            });
+                                result.ImportedFunctions.Add(new ImportedFunctionModel()
+                                {
+                                    FullTypeName = fullMethodName,
+                                });
+                            }
                         }
                     }
                 }
 
+                // Imported Types
                 foreach (var importedType in metadataReader.TypeReferences)
                 {
                     var typeRef = metadataReader.GetTypeReference(importedType);
                     var typeRefName = metadataReader.GetString(typeRef.Name);
                     var typeRefNamespace = metadataReader.GetString(typeRef.Namespace);
-                    result.ImportedTypes.Add($"{typeRefNamespace}.{typeRefName}");
+                    result.ImportedTypes.Add(new ImportedTypeModel()
+                    {
+                        FullTypeName = $"{typeRefNamespace}.{typeRefName}"
+                    });
                 }
 
                 // Exported Types
@@ -212,7 +218,10 @@ namespace AssemblyAnalyzer
                     var exportedType = metadataReader.GetExportedType(exportedTypeHandle);
                     var exportedTypeName = metadataReader.GetString(exportedType.Name);
                     var exportedTypeNamespace = metadataReader.GetString(exportedType.Namespace);
-                    result.ExportedTypes.Add($"{exportedTypeNamespace}.{exportedTypeName}");
+                    result.ExportedTypes.Add(new ExportedTypeModel()
+                    {
+                        FullTypeName = $"{exportedTypeNamespace}.{exportedTypeName}"
+                    });
                 }
 
                 // Full Decompilation
@@ -237,7 +246,7 @@ namespace AssemblyAnalyzer
                     {
                         decompiler.DecompileProject(assemblyFile, Path.GetDirectoryName(projectFilePath), projectFileWriter);
                     }
-                    result.FullDecompilation.Add($"Decompiled project written to: {projectFilePath}");
+                    Console.WriteLine($"Decompiled project written to: {projectFilePath}");
                 }
             }
             catch (Exception ex)
