@@ -1,12 +1,15 @@
 ﻿using System.Reflection;
 using System.Reflection.Metadata;
+using System.Reflection.Metadata.Ecma335;
 using System.Reflection.PortableExecutable;
+using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using ICSharpCode.Decompiler;
 using ICSharpCode.Decompiler.CSharp;
 using ICSharpCode.Decompiler.CSharp.ProjectDecompiler;
 using ICSharpCode.Decompiler.DebugInfo;
+using ICSharpCode.Decompiler.IL;
 using ICSharpCode.Decompiler.Metadata;
 using ICSharpCode.Decompiler.TypeSystem;
 using ICSharpCode.ILSpyX.PdbProvider;
@@ -73,19 +76,18 @@ namespace AssemblyAnalyzer
                     decompilerSettings.CSharpFormattingOptions.IndentationString = "";
                 }
                 var typeSystem = new DecompilerTypeSystem(assemblyFile, resolver);
+                var ilReader = new ILReader(typeSystem.MainModule);
                 var csharpDecompiler = new CSharpDecompiler(assemblyFile, resolver, decompilerSettings);
+                var metadataMethodLookup = new Dictionary<Handle, MethodDefinition>();
 
                 // Types and Methods
                 foreach (var typeDefHandle in metadataReader.TypeDefinitions)
                 {
                     var typeDef = metadataReader.GetTypeDefinition(typeDefHandle);
-                    var typeName = metadataReader.GetString(typeDef.Name);
-                    var namespaceName = metadataReader.GetString(typeDef.Namespace);
-                    var fullTypeName = string.IsNullOrEmpty(namespaceName) ? typeName : $"{namespaceName}.{typeName}";
-
+                    var typeName = UniqueTypeNaming.Get(metadataReader, typeDefHandle);
                     var typeObj = new TypeModel()
                     {
-                        Name = fullTypeName,
+                        Name = typeName,
                         Kind = typeDef.Attributes.HasFlag(TypeAttributes.Interface) ? "Interface"
                             : typeDef.Attributes.HasFlag(TypeAttributes.Class) ? "Class"
                             : (typeDef.Attributes.HasFlag(TypeAttributes.Sealed) && typeDef.Attributes.HasFlag(TypeAttributes.SpecialName) ? "Enum" : "Unknown"),
@@ -99,7 +101,8 @@ namespace AssemblyAnalyzer
                         {
                             continue;
                         }
-                        var methodName = metadataReader.GetString(method.Name);
+
+                        var methodName = UniqueMethodNaming.Get(metadataReader, typeDefHandle, methodHandle);
                         var context = new GenericContext(method.GetGenericParameters(), typeDef.GetGenericParameters(), metadataReader);
                         var signature = method.DecodeSignature<string, GenericContext>(new SignatureDecoder(), context);
                         var returnType = signature.ReturnType;
@@ -108,6 +111,7 @@ namespace AssemblyAnalyzer
                             .ToList();
                         var methodSize = 0;
                         string ilBytesStr = string.Empty;
+                        var calledMethodHandles = new Dictionary<Handle, string>();
 
                         if (method.RelativeVirtualAddress != 0)
                         {
@@ -118,6 +122,21 @@ namespace AssemblyAnalyzer
                                 if (ilBytes != null)
                                 {
                                     methodSize = ilBytes.Length;
+                                    var ilFunctionBody = assemblyFile.GetMethodBody(method.RelativeVirtualAddress);
+                                    var il = ilReader.ReadIL(methodHandle, ilFunctionBody);
+                                    foreach (var inst in il.Descendants.OfType<CallInstruction>())
+                                    {
+                                        var calledMethodHandle = inst.Method;
+                                        if (calledMethodHandle == null)
+                                        {
+                                            continue;
+                                        }
+                                        if (!calledMethodHandles.ContainsKey(calledMethodHandle.MetadataToken))
+                                        {
+                                            var fallbackName = UniqueMethodNaming.Get(calledMethodHandle);
+                                            calledMethodHandles.Add(calledMethodHandle.MetadataToken, fallbackName);
+                                        }
+                                    }
                                 }
                                 ilBytesStr = (ilBytes != null && ilBytes.Length > 0)
                                         ? BitConverter.ToString(ilBytes).Replace("-", " ")
@@ -135,11 +154,9 @@ namespace AssemblyAnalyzer
 
                         string sourceText = string.Empty;
                         var stringLiterals = new List<string>();
-                        var calledMethods = new List<CalledMethodModel>(); // methods this decompiled method calls
                         try
                         {
                             var decompiledNode = csharpDecompiler.Decompile(methodHandle);
-                            decompiledNode.AcceptVisitor(new CallGraphVisitor(calledMethods));
                             sourceText = decompiledNode.ToString();
                             if (!string.IsNullOrEmpty(sourceText))
                             {
@@ -151,6 +168,8 @@ namespace AssemblyAnalyzer
                         {
                             sourceText = "    <decompilation failed>";
                         }
+
+                        metadataMethodLookup.Add(methodHandle, method);
                         typeObj.Methods.Add(new MethodModel()
                         {
                             Name = methodName,
@@ -161,41 +180,65 @@ namespace AssemblyAnalyzer
                             ILBytes = ilBytesStr,
                             DecompiledSource = sourceText,
                             StringLiterals = stringLiterals,
-                            CalledMethods = calledMethods
+                            CalledMethodHandles = calledMethodHandles
                         });
                     }
 
                     result.Types.Add(typeObj);
                 }
 
+                // Fixup called functions now that all functions have been visited.
+                // This involves resolving method token to method definition.
+                foreach (var type in result.Types)
+                {
+                    foreach (var method in type.Methods)
+                    {
+                        foreach (var kvp in method.CalledMethodHandles)
+                        {
+                            var handle = kvp.Key;
+                            var fallbackName = kvp.Value;
+                            if (!metadataMethodLookup.TryGetValue(handle, out var calledMethodDef))
+                            {
+                                // any called function not in our assembly (ie an import) won't be
+                                // resolved this way. without also analyzing those imported assemblies,
+                                // or without symbol information, we won't have an RVA or complete
+                                // method signature with which to form a unique method name
+                                // (see UniqueNaming.cs), so such calls cannot be used in callgraph
+                                // analysis. in this case we use a fallback name with no address.
+                                // the fallback name is produced directly from the IMethod at the
+                                // call site which is less precise than a full MethodDefinition.
+                                method.CalledMethods.Add(new CalledMethodModel()
+                                {
+                                    Name = fallbackName,
+                                    Address = 0
+                                });
+                            }
+                            else
+                            {
+                                method.CalledMethods.Add(new CalledMethodModel()
+                                {
+                                    Name = method.Name,
+                                    Address = method.RVA
+                                });
+                            }
+                        }
+                    }
+                }
+
                 // Imported Methods
                 foreach (var memberRefHandle in metadataReader.MemberReferences)
                 {
                     var memberRef = metadataReader.GetMemberReference(memberRefHandle);
-                    if (memberRef.Parent.Kind == HandleKind.TypeReference)
+                    if (memberRef.Parent.Kind == HandleKind.TypeReference &&
+                        memberRef.GetKind() == MemberReferenceKind.Method)
                     {
-                        var typeRefHandle = (TypeReferenceHandle)memberRef.Parent;
-                        var typeRef = metadataReader.GetTypeReference(typeRefHandle);
-                        var typeNamespace = metadataReader.GetString(typeRef.Namespace);
-                        var typeName = metadataReader.GetString(typeRef.Name);
-                        var fullTypeName = string.IsNullOrEmpty(typeNamespace) ? typeName : $"{typeNamespace}.{typeName}";
-
-                        if (memberRef.GetKind() == MemberReferenceKind.Method)
+                        var methodName = UniqueMethodNaming.Get(metadataReader, memberRefHandle);
+                        if (!result.ImportedFunctions.Any(result => result.FullTypeName == methodName))
                         {
-                            var methodName = metadataReader.GetString(memberRef.Name);
-                            string fullMethodName = $"{fullTypeName}.{methodName}";
-                            if (methodName.StartsWith("."))
+                            result.ImportedFunctions.Add(new ImportedFunctionModel()
                             {
-                                fullMethodName = $"{fullTypeName}{methodName}";
-                            }
-
-                            if (!result.ImportedFunctions.Any(result => result.FullTypeName == fullMethodName))
-                            {
-                                result.ImportedFunctions.Add(new ImportedFunctionModel()
-                                {
-                                    FullTypeName = fullMethodName,
-                                });
-                            }
+                                FullTypeName = methodName,
+                            });
                         }
                     }
                 }
@@ -203,24 +246,20 @@ namespace AssemblyAnalyzer
                 // Imported Types
                 foreach (var importedType in metadataReader.TypeReferences)
                 {
-                    var typeRef = metadataReader.GetTypeReference(importedType);
-                    var typeRefName = metadataReader.GetString(typeRef.Name);
-                    var typeRefNamespace = metadataReader.GetString(typeRef.Namespace);
+                    var typeName = UniqueTypeNaming.Get(metadataReader, importedType);
                     result.ImportedTypes.Add(new ImportedTypeModel()
                     {
-                        FullTypeName = $"{typeRefNamespace}.{typeRefName}"
+                        FullTypeName = typeName
                     });
                 }
 
                 // Exported Types
                 foreach (var exportedTypeHandle in metadataReader.ExportedTypes)
                 {
-                    var exportedType = metadataReader.GetExportedType(exportedTypeHandle);
-                    var exportedTypeName = metadataReader.GetString(exportedType.Name);
-                    var exportedTypeNamespace = metadataReader.GetString(exportedType.Namespace);
+                    var typeName = UniqueTypeNaming.Get(metadataReader, exportedTypeHandle);
                     result.ExportedTypes.Add(new ExportedTypeModel()
                     {
-                        FullTypeName = $"{exportedTypeNamespace}.{exportedTypeName}"
+                        FullTypeName = typeName
                     });
                 }
 
@@ -257,7 +296,10 @@ namespace AssemblyAnalyzer
 
             try
             {
-                var json = JsonSerializer.Serialize(result, new JsonSerializerOptions { WriteIndented = true });
+                var json = JsonSerializer.Serialize(result, new JsonSerializerOptions { 
+                    WriteIndented = true,
+                    Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
+                });
                 var outputFilePath = Path.Combine(projectPath, "assembly_analysis.json");
                 File.WriteAllText(outputFilePath, json);
                 Console.WriteLine($"Analysis result written to: {outputFilePath}");
@@ -270,5 +312,7 @@ namespace AssemblyAnalyzer
             
             return 0;
         }
+
+        
     }
 }

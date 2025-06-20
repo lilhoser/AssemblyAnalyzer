@@ -21,6 +21,9 @@ namespace AssemblyAnalyzer
         }
     }
 
+    //
+    // NB: AST not used for callgraph generation. Keeping this visitor for potential future use.
+    //
     internal class CallGraphVisitor : DepthFirstAstVisitor
     {
         public readonly List<CalledMethodModel> _calledMethods = new();
@@ -38,7 +41,7 @@ namespace AssemblyAnalyzer
                 _calledMethods.Add(new CalledMethodModel()
                 {
                     Name = target,
-                    Address = 0 // todo
+                    Address = 0 // must be resolved later
                 });
             }
             base.VisitInvocationExpression(invocation);

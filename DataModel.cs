@@ -1,4 +1,6 @@
-﻿
+﻿using System.Reflection.Metadata;
+using System.Text.Json.Serialization;
+
 namespace AssemblyAnalyzer
 {
     internal class DataModel
@@ -52,6 +54,8 @@ namespace AssemblyAnalyzer
         public string ILBytes { get; set; } = string.Empty;
         public string DecompiledSource { get; set; } = string.Empty;
         public List<CalledMethodModel> CalledMethods { get; set; } = new List<CalledMethodModel>();
+        [JsonIgnore]
+        public Dictionary<Handle, string> CalledMethodHandles { get; set; } = new Dictionary<Handle, string>();
     }
 
     internal class MethodParameterModel
